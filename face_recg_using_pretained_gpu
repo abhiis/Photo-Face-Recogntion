@@ -1,0 +1,119 @@
+import cv2
+import tensorflow as tf
+import os
+import pickle
+import shutil
+
+
+def encode_faces(directory):
+    known_faces = []
+    known_names = []
+    for person in os.listdir(directory):
+        person_dir = os.path.join(directory, person)
+        if not os.path.isdir(person_dir):
+            continue
+        for image_name in os.listdir(person_dir):
+            image_path = os.path.join(person_dir, image_name)
+            image = cv2.imread(image_path)
+            face_encodings = detect_faces(image)
+            if len(face_encodings) > 0:
+                known_faces.extend(face_encodings)
+                known_names.extend([person] * len(face_encodings))
+    return known_faces, known_names
+
+
+def detect_faces(image):
+    blob = cv2.dnn.blobFromImage(
+        image, 1.0, (300, 300), (104.0, 177.0, 123.0), swapRB=True, crop=False)
+    face_net.setInput(blob)
+    detections = face_net.forward()
+    face_encodings = []
+    for i in range(detections.shape[2]):
+        confidence = detections[0, 0, i, 2]
+        if confidence > 0.5:
+            box = detections[0, 0, i, 3:7] * [image.shape[1],
+                                              image.shape[0], image.shape[1], image.shape[0]]
+            (left, top, right, bottom) = box.astype(int)
+            face = image[top:bottom, left:right]
+            face_encodings.append(face)
+
+    if len(face_encodings) == 0:
+        face_encodings = [[]]  # Placeholder empty list
+
+    return face_encodings
+
+
+def tag_faces_in_image(image_path, known_faces, known_names, output_folder, image_name):
+    image = cv2.imread(image_path)
+    face_encodings = detect_faces(image)
+
+    if len(face_encodings) > 0:
+        # Convert face encodings to TensorFlow tensor with double data type
+        face_encodings = tf.convert_to_tensor(face_encodings, dtype=tf.float64)
+
+        # Load the known faces to TensorFlow tensor with double data type
+        known_faces_tensor = tf.convert_to_tensor(
+            known_faces, dtype=tf.float64)
+
+        # Compute face matches using GPU
+        distances = tf.reduce_sum(tf.square(tf.subtract(
+            tf.cast(known_faces_tensor, dtype=tf.float64), tf.cast(face_encodings, dtype=tf.float64))), axis=1)
+        match_indices = tf.argmin(distances, axis=0).numpy()
+        matches = distances.numpy()[match_indices]
+
+        # Loop through each detected face
+        for match_index in match_indices:
+            name = known_names[match_index]
+
+            # Export the identified face
+            face_image = face_encodings[match_index]
+            person_folder = os.path.join(output_folder, name)
+            os.makedirs(person_folder, exist_ok=True)
+            face_filename = os.path.join(
+                person_folder, f"face_{match_index}_{image_name}.jpg")
+            cv2.imwrite(face_filename, image)
+
+            # Draw a rectangle and label the face
+            (left, top, right, bottom) = (
+                0, 0, face_image.shape[1], face_image.shape[0])
+            cv2.rectangle(image, (left, top), (right, bottom), (0, 255, 0), 2)
+            cv2.putText(image, name, (left, top - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 255, 0), 2)
+
+    # Display the tagged image
+    cv2.imshow("Tagged Image", image)
+    cv2.waitKey(0)
+    cv2.destroyAllWindows()
+
+
+# Path to the directory containing all the images to be processed
+image_directory = "D:\Weddings\Anurag Wedding\EVENT 01"
+
+# Path to the directory where the identified faces will be exported
+output_directory = "C:/Users/abhis/Desktop/The Big Grill/Photo Face Recogntion/Processed"
+
+# Path to the pickled face encodings and names
+encodings_file = "known_faces.pkl"
+names_file = "known_names.pkl"
+
+# Load the saved face encodings and names
+with open(encodings_file, "rb") as f:
+    known_faces = pickle.load(f)
+with open(names_file, "rb") as f:
+    known_names = pickle.load(f)
+
+# Move known faces and names to TensorFlow tensors
+known_faces = tf.convert_to_tensor(known_faces)
+
+# Load the pre-trained face detection model from OpenCV
+face_net = cv2.dnn.readNetFromCaffe(
+    "C:/Users/abhis/Desktop/The Big Grill/Photo Face Recogntion/Pretrained/deploy.prototxt",
+    "C:/Users/abhis/Desktop/The Big Grill/Photo Face Recogntion/Pretrained/res10_300x300_ssd_iter_140000.caffemodel")
+
+# Process all images in the directory and export the identified faces
+for image_name in os.listdir(image_directory):
+
+    image_path = os.path.join(image_directory, image_name)
+    print(image_path)
+    tag_faces_in_image(image_path, known_faces, known_names,
+                       output_directory, image_name)
